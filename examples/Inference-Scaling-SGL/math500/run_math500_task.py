@@ -43,10 +43,12 @@ def parse_args():
                       help='Temperature for sampling (default: 0.7)')
     parser.add_argument('--log-file', type=str, default='output.log',
                       help='Path to log file (default: output.log)')
-    parser.add_argument('--num-processes', type=int, default=4,
+    parser.add_argument('--num-processes', type=int, default=128,
                       help='Number of parallel processes (default: 4)')
     parser.add_argument('--num-actions', type=int, default=1,
                         help='Number of actions to consider (default: 1)')
+    parser.add_argument('--num-examples', type=int,
+                        help='Number of examples to process (default: complete dataset)')
     return parser.parse_args()
 
 def setup_logging(log_file):
@@ -262,6 +264,8 @@ def main():
     
     dataset = load_dataset("HuggingFaceH4/MATH-500", split="test")
     dataset_list = [ex for ex in dataset]
+    if args.num_examples is not None:
+        dataset_list = dataset_list[:args.num_examples]
     logger.info(f"Loaded dataset with {len(dataset_list)} examples")
 
     # Create processing chunks
@@ -321,25 +325,29 @@ def main():
             final_output["metadata"].update({
                 "total_examples": len(processed),
                 "success_count": len(success),
-                "success_rate": len(success) / len(processed),
+                "success_rate": len(success) / len(processed) if processed else 0,
                 "time_stats": {
                     "total": sum(times),
-                    "average": sum(times) / len(times),
-                    "min": min(times),
-                    "max": max(times)
+                    "average": sum(times) / len(times) if times else 0,
+                    "min": min(times) if times else 0,
+                    "max": max(times) if times else 0
                 }
             })
 
         # Write final output
         with open(args.output_path, "w") as f:
             json.dump(final_output, f, indent=4, sort_keys=True)
-
+            
         # Print summary
-        logger.info("\nFinal Statistics:")
-        logger.info(f"Total time: {final_output['metadata']['total_time']:.2f}s")
-        logger.info(f"Processed examples: {final_output['metadata']['total_examples']}/{len(dataset_list)}")
-        logger.info(f"Success rate: {final_output['metadata']['success_rate']:.1%}")
-        logger.info(f"Average processing time: {final_output['metadata']['time_stats']['average']:.2f}s")
+        try:
+            logger.info("\nFinal Statistics:")
+            logger.info(f"Total time: {final_output['metadata']['total_time']:.2f}s")
+            logger.info(f"Processed examples: {final_output['metadata']['total_examples']}/{len(dataset_list)}")
+            logger.info(f"Success rate: {final_output['metadata']['success_rate']:.1%}")
+            logger.info(f"Average processing time: {final_output['metadata']['time_stats']['average']:.2f}s")
+        except Exception as e:
+            logger.error(f"Error printing summary: {str(e)}")
+            traceback.print_exc()
 
 if __name__ == "__main__":
     main()

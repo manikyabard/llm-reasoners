@@ -50,6 +50,7 @@ class BeamSearchResult(NamedTuple):
     cum_reward: float
     tree: BeamSearchNode
     trace: List[Tuple[Action, State, float]]
+    steering_metrics: Optional[dict] = None
 
 
 class BeamSearch(SearchAlgorithm, Generic[State, Action]):

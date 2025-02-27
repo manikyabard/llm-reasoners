@@ -1,0 +1,9 @@
+---
+description: terminal usage guidelines
+globs: 
+alwaysApply: false
+---
+
+# Terminal Guidelines
+
+- Always use `conda activate int2` before running any terminal commands.

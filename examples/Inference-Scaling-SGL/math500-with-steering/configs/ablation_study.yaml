@@ -1,0 +1,34 @@
+# Ablation Study configuration for math500-with-steering experiments
+# This configuration runs an ablation study comparing different steering strategies
+
+model_settings:
+  policy_model_path: "/data/manikya/Llama-3.2-1B-Instruct"
+  reward_model_path: "/data/manikya/math-shepherd-mistral-7b-prm"
+  sglang_url: null  # Set to an API URL if using remote models
+  device: "cuda:0"
+
+search_settings:
+  beam_size: 3
+  max_depth: 10
+  temperature: 0.7
+  num_actions: 5
+  num_steered_actions: 5
+
+steering_settings:
+  # These settings will be overridden by the ablation study
+  # but are included as defaults
+  steering_strategy: "reward_weighted"
+  steering_scale: 1.0
+  layers_to_use: [-1, -2, -3]
+  components_to_use: ["self_attn.o_proj"]
+  num_steering_candidates: 5
+  combine_actions: true
+
+experiment_settings:
+  prompt_path: "path/to/prompts.json"  # Replace with actual path
+  output_path: "results/ablation_study_results.json"
+  log_file: "logs/ablation_study_run.log"
+  num_examples: 5
+  start_idx: 0
+  num_processes: 1
+  ablation_study: true  # Enable ablation study mode 

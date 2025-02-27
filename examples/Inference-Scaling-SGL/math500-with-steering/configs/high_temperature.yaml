@@ -1,0 +1,31 @@
+# High Temperature configuration for math500-with-steering experiments
+# This configuration uses a higher temperature for more diverse exploration
+
+model_settings:
+  policy_model_path: "/data/manikya/Llama-3.2-1B-Instruct"
+  reward_model_path: "/data/manikya/math-shepherd-mistral-7b-prm"
+  sglang_url: null  # Set to an API URL if using remote models
+  device: "cuda:0"
+
+search_settings:
+  beam_size: 5  # Increased beam size for more exploration
+  max_depth: 12  # Deeper search
+  temperature: 1.2  # Higher temperature for more diverse sampling
+  num_actions: 8  # More actions to consider
+  num_steered_actions: 8  # More steered actions
+
+steering_settings:
+  steering_strategy: "reward_weighted"
+  steering_scale: 1.5  # Stronger steering
+  layers_to_use: [-1, -2, -3, -4]  # More layers for steering
+  components_to_use: ["self_attn.o_proj"]
+  num_steering_candidates: 8  # More candidates for steering computation
+  combine_actions: true
+
+experiment_settings:
+  prompt_path: "path/to/prompts.json"  # Replace with actual path
+  output_path: "results/high_temperature_results.json"
+  log_file: "logs/high_temperature_run.log"
+  num_examples: 10
+  start_idx: 0
+  num_processes: 1 

@@ -1,0 +1,30 @@
+# Default configuration for math500-with-steering experiments
+# This is a baseline configuration with standard settings
+
+model_settings:
+  policy_model_path: "/data/manikya/Llama-3.2-1B-Instruct"
+  reward_model_path: "/data/manikya/math-shepherd-mistral-7b-prm"
+  device: "cuda:5"
+
+search_settings:
+  beam_size: 3
+  max_depth: 10
+  temperature: 0.8
+  num_actions: 4
+  num_steered_actions: 3
+
+steering_settings:
+  steering_strategy: "contrast"
+  steering_scale: 1.0
+  layers_to_use: [0, 3, 6, 9, 12, 15]  # Last three layers
+  components_to_use: ["self_attn.o_proj"]
+  num_steering_candidates: 3
+  combine_actions: true
+
+experiment_settings:
+  prompt_path: "/home/manikya/llm-reasoners/examples/Inference-Scaling-SGL/math500/prompts.json"  # Replace with actual path
+  output_path: "results/contrast_v1_results.json"
+  log_file: "logs/contrast_v1_run.log"
+  num_examples: 5
+  start_idx: 5
+  num_processes: 5 
