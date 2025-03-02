@@ -119,6 +119,9 @@ def parse_args():
         for key, value in vars(config_args).items():
             if value is not None:  # Only override if value is provided in config
                 setattr(args, key, value)
+
+        for key, value in config.items():
+            setattr(args, key, value)
     
     # Verify required arguments are provided
     if not args.prompt_path:
@@ -170,6 +173,10 @@ def parse_steering_config(args):
         components_to_use = args.components_to_use.split(',')
     else:
         components_to_use = args.components_to_use
+    if isinstance(args.component_weights, str):
+        component_weights = [float(weight) for weight in args.component_weights.split(',')]
+    else:
+        component_weights = args.steering_settings.get("component_weights", {})
     
     # Create steering configuration
     steering_config = {
@@ -178,6 +185,7 @@ def parse_steering_config(args):
         "steering_scale": args.steering_scale,
         "layers_to_use": layers_to_use,
         "components_to_use": components_to_use,
+        "component_weights": component_weights,
         "temperature": args.temperature,
         "num_steering_candidates": min(args.num_steering_candidates, args.num_actions),
         "num_steered_generations": args.num_steered_actions,
@@ -661,7 +669,6 @@ def log_aggregated_steering_metrics(aggregated_metrics):
 
 def main():
     """Main entry point with parallelization."""
-    total_start = time.time()
     args = parse_args()
     setup_logging(args.log_file)
     

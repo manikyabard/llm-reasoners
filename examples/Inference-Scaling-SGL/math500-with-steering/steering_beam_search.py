@@ -38,29 +38,47 @@ class SteeringBeamSearch(BeamSearch):
                 - layers_to_use: List of model layers to apply steering to
                 - components_to_use: List of component paths within layers
                 - steering_scale: Scaling factor for steering vectors
-                - layer_weights: Optional weights for each layer
-                - component_weights: Optional weights for each component 
-                - steering_strategy: How to compute steering vectors
-                    - "reward_weighted" (default): Weight by reward
-                    - "best_only": Use only the best candidate
-                    - "contrast": Contrast best vs worst
-                - num_steering_candidates: How many candidates to use for steering
-                - num_steered_generations: Number of steered generations to produce
+                - normalize_vectors: Whether to normalize steering vectors
+                - use_layer_specific_scaling: Whether to use layer-specific scaling
+                - layer_specific_scales: Dictionary of layer-specific scaling factors
+                - enable_incremental_steering: Whether to enable incremental steering
+                - incremental_steering_settings: Settings for incremental steering
+                    - history_weight: Weight for historical steering vector
+                    - current_weight: Weight for current steering vector
+                    - min_steps_before_update: Minimum steps before updating steering vector
+                - contrast_settings: Settings for contrastive steering
+                    - selection_method: Method for selecting positive and negative examples
+                    - positive_threshold: Threshold for positive examples
+                    - negative_threshold: Threshold for negative examples
+                    - positive_percentile: Percentile for positive examples
+                    - negative_percentile: Percentile for negative examples
+                    - min_examples_per_class: Minimum examples per class for contrastive steering
             **kwargs: Additional arguments for the BeamSearch algorithm
         """
         super().__init__(beam_size, max_depth, **kwargs)
         
         # Default steering configuration
         default_steering_config = {
-            "layers_to_use": [-1, -2, -3],  # Default to last 3 layers
-            "components_to_use": ["self_attn.o_proj"],  # Default to attention output
+            "layers_to_use": [31, 30, 29],  # Default to last 3 layers (using actual indices)
+            "components_to_use": ["self_attn.o_proj"],
             "steering_scale": 1.0,
-            "layer_weights": None,
-            "component_weights": None,
-            "steering_strategy": "reward_weighted",
-            "num_steering_candidates": 5,  # Number of candidates to use for steering
-            "num_steered_generations": 5,  # Number of steered generations to produce
-            "combine_initial_and_steered": True  # Whether to combine initial and steered actions
+            "normalize_vectors": False,
+            "use_layer_specific_scaling": False,
+            "layer_specific_scales": {},
+            "enable_incremental_steering": False,
+            "incremental_steering_settings": {
+                "history_weight": 0.7,
+                "current_weight": 0.3,
+                "min_steps_before_update": 2
+            },
+            "contrast_settings": {
+                "selection_method": "extremes",
+                "positive_threshold": 0.7,
+                "negative_threshold": 0.3,
+                "positive_percentile": 90,
+                "negative_percentile": 10,
+                "min_examples_per_class": 2
+            }
         }
         
         # Override defaults with provided configuration
@@ -68,6 +86,10 @@ class SteeringBeamSearch(BeamSearch):
         if steering_config:
             self.steering_config.update(steering_config)
             
+        # Initialize storage for incremental steering
+        self.historical_steering_vector = {}
+        self.steps_since_update = 0
+        
         # Initialize tracking variables for activations and steering vectors
         self.activation_storage = {}
         self.current_steering_vector = None
@@ -164,16 +186,27 @@ class SteeringBeamSearch(BeamSearch):
         
         steering_vectors = {}
         layers_to_use = self.steering_config["layers_to_use"]
+
+        if any(layer < 0 for layer in layers_to_use):
+            # Dynamically determine the layers to use based on model architecture
+            # Get total number of layers from first activation dict
+            first_layer_name = list(activations_list[0].keys())[0]  # Get any layer name
+            total_layers = int(first_layer_name.split(".")[2])  # Extract layer number
+            
+            # Convert negative indices to positive
+            layers_to_use = [layer if layer >= 0 else total_layers + layer + 1 for layer in layers_to_use]
+            logger.info(f"Dynamically determined layers to use: {layers_to_use}")
+
         components_to_use = self.steering_config["components_to_use"]
         steering_scale = self.steering_config["steering_scale"]
         
         # Process layer weights
-        layer_weights = self.steering_config["layer_weights"]
+        layer_weights = self.steering_config.get("layer_specific_scales", {}) if self.steering_config["use_layer_specific_scaling"] else {}
         if not layer_weights:
             layer_weights = {layer: 1.0 for layer in layers_to_use}
             
         # Process component weights
-        component_weights = self.steering_config["component_weights"]
+        component_weights = self.steering_config.get("component_weights", {})
         if not component_weights:
             component_weights = {component: 1.0 for component in components_to_use}
         
@@ -189,7 +222,7 @@ class SteeringBeamSearch(BeamSearch):
                 continue
                 
             # Get layer and component weights
-            layer_weight = layer_weights.get(layer_idx, 1.0)
+            layer_weight = layer_weights.get(str(layer_idx), 1.0)  # Convert to string for YAML compatibility
             component_weight = component_weights.get(component, 1.0)
             
             # Stack activations for this layer from all generations
@@ -202,9 +235,30 @@ class SteeringBeamSearch(BeamSearch):
             mean_activation = torch.mean(layer_activations, dim=0)
             
             # Compute steering vector as the difference between weighted sum and mean
+            steering_vector = weighted_sum - mean_activation
+            
+            # Normalize if enabled
+            if self.steering_config["normalize_vectors"]:
+                steering_vector = steering_vector / torch.norm(steering_vector, dim=-1, keepdim=True)
+            
             # Apply layer, component, and global scaling factors
-            steering_vectors[layer_name] = (weighted_sum - mean_activation) * layer_weight * component_weight * steering_scale
-        
+            steering_vector = steering_vector * layer_weight * component_weight * steering_scale
+            
+            # Apply incremental steering if enabled
+            if self.steering_config["enable_incremental_steering"]:
+                if layer_name in self.historical_steering_vector and self.steps_since_update >= self.steering_config["incremental_steering_settings"]["min_steps_before_update"]:
+                    history_weight = self.steering_config["incremental_steering_settings"]["history_weight"]
+                    current_weight = self.steering_config["incremental_steering_settings"]["current_weight"]
+                    steering_vector = (history_weight * self.historical_steering_vector[layer_name] + 
+                                    current_weight * steering_vector)
+            
+            steering_vectors[layer_name] = steering_vector
+            
+            # Update historical vector if using incremental steering
+            if self.steering_config["enable_incremental_steering"]:
+                self.historical_steering_vector[layer_name] = steering_vector
+                
+        self.steps_since_update += 1
         return steering_vectors
     
     def _compute_steering_vector_contrast(
@@ -226,16 +280,27 @@ class SteeringBeamSearch(BeamSearch):
         """
         steering_vectors = {}
         layers_to_use = self.steering_config["layers_to_use"]
+        if any(layer < 0 for layer in layers_to_use):
+            # Dynamically determine the layers to use based on model architecture
+            # Get total number of layers from first activation dict
+            first_layer_name = list(positive_activations[0].keys())[0]  # Get any layer name
+            total_layers = int(first_layer_name.split(".")[2])  # Extract layer number
+            
+            # Convert negative indices to positive
+            layers_to_use = [layer if layer >= 0 else total_layers + layer + 1 for layer in layers_to_use]
+            logger.info(f"Dynamically determined layers to use: {layers_to_use}")
+
+        
         components_to_use = self.steering_config["components_to_use"]
         steering_scale = self.steering_config["steering_scale"]
         
         # Process layer weights
-        layer_weights = self.steering_config["layer_weights"]
+        layer_weights = self.steering_config.get("layer_specific_scales", {}) if self.steering_config["use_layer_specific_scaling"] else {}
         if not layer_weights:
             layer_weights = {layer: 1.0 for layer in layers_to_use}
             
         # Process component weights
-        component_weights = self.steering_config["component_weights"]
+        component_weights = self.steering_config.get("component_weights", {})
         if not component_weights:
             component_weights = {component: 1.0 for component in components_to_use}
         
@@ -251,19 +316,42 @@ class SteeringBeamSearch(BeamSearch):
                 continue
                 
             # Get layer and component weights
-            layer_weight = layer_weights.get(layer_idx, 1.0)
+            layer_weight = layer_weights.get(str(layer_idx), 1.0)  # Convert to string for YAML compatibility
             component_weight = component_weights.get(component, 1.0)
             
-            # Compute mean of positive activations
-            positive_mean = torch.mean(torch.stack([act[layer_name] for act in positive_activations]), dim=0)
+            # Stack activations for this layer from positive and negative examples
+            pos_activations = torch.stack([act[layer_name] for act in positive_activations])
+            neg_activations = torch.stack([act[layer_name] for act in negative_activations])
             
-            # Compute mean of negative activations
-            negative_mean = torch.mean(torch.stack([act[layer_name] for act in negative_activations]), dim=0)
+            # Compute mean activations
+            pos_mean = torch.mean(pos_activations, dim=0)
+            neg_mean = torch.mean(neg_activations, dim=0)
             
             # Compute steering vector as the difference between positive and negative means
+            steering_vector = pos_mean - neg_mean
+            
+            # Normalize if enabled
+            if self.steering_config["normalize_vectors"]:
+                steering_vector = steering_vector / torch.norm(steering_vector, dim=-1, keepdim=True)
+            
             # Apply layer, component, and global scaling factors
-            steering_vectors[layer_name] = (positive_mean - negative_mean) * layer_weight * component_weight * steering_scale
-        
+            steering_vector = steering_vector * layer_weight * component_weight * steering_scale
+            
+            # Apply incremental steering if enabled
+            if self.steering_config["enable_incremental_steering"]:
+                if layer_name in self.historical_steering_vector and self.steps_since_update >= self.steering_config["incremental_steering_settings"]["min_steps_before_update"]:
+                    history_weight = self.steering_config["incremental_steering_settings"]["history_weight"]
+                    current_weight = self.steering_config["incremental_steering_settings"]["current_weight"]
+                    steering_vector = (history_weight * self.historical_steering_vector[layer_name] + 
+                                    current_weight * steering_vector)
+            
+            steering_vectors[layer_name] = steering_vector
+            
+            # Update historical vector if using incremental steering
+            if self.steering_config["enable_incremental_steering"]:
+                self.historical_steering_vector[layer_name] = steering_vector
+                
+        self.steps_since_update += 1
         return steering_vectors
     
     def get_steering_metrics(self) -> Dict:
